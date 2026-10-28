@@ -1,0 +1,6 @@
+{
+  "name": "Slovin's Calculator",
+  "description": "Calculate sample sizes using Slovin's formula with step-by-step mathematical breakdown, formula presentation, and customizable margin of error.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
