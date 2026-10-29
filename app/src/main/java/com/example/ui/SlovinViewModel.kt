@@ -14,6 +14,8 @@ import com.example.data.repository.CalculationRepository
 import com.example.model.MarginComparisonItem
 import com.example.model.SlovinCalculationResult
 import com.example.model.SlovinMath
+import com.example.model.StratifiedAllocationSummary
+import com.example.model.StratumInputItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -30,10 +32,22 @@ data class SlovinUiState(
     val sensitivityList: List<MarginComparisonItem> = emptyList(),
     val isStepsExpanded: Boolean = true,
     val selectedStepIndex: Int? = null,
-    val activeTab: Int = 0, // 0: Calculator & Steps, 1: Sensitivity Table, 2: Formula Guide
+    val activeTab: Int = 0, // 0: Calculator & Steps, 1: Level / Strata Allocation, 2: Sensitivity Table, 3: Guide
     val snackbarMessage: String? = null,
     val showHistorySheet: Boolean = false,
-    val showFormulaInfoDialog: Boolean = false
+    val showFormulaInfoDialog: Boolean = false,
+
+    // Stratified / Grade Level Allocation State
+    val strataInputs: List<StratumInputItem> = listOf(
+        StratumInputItem(name = "Grade 7", populationStr = "350"),
+        StratumInputItem(name = "Grade 8", populationStr = "300"),
+        StratumInputItem(name = "Grade 9", populationStr = "250"),
+        StratumInputItem(name = "Grade 10", populationStr = "200")
+    ),
+    val customSampleSizeInput: String = "",
+    val useSlovinSampleSize: Boolean = true,
+    val stratifiedSummary: StratifiedAllocationSummary? = null,
+    val expandedStratumDetailId: String? = null
 )
 
 class SlovinViewModel(
@@ -54,16 +68,16 @@ class SlovinViewModel(
     init {
         // Initial calculation with default 10,000 population and 5% margin
         recalculate("10000", "5.0")
+        recomputeStratifiedAllocation()
     }
 
     fun onPopulationChange(newPopulation: String) {
-        // Allow digits only
         val clean = newPopulation.filter { it.isDigit() }
         recalculate(clean, _uiState.value.marginInput)
+        recomputeStratifiedAllocation()
     }
 
     fun onMarginChange(newMargin: String) {
-        // Allow digits and up to one decimal point
         val clean = newMargin.filter { it.isDigit() || it == '.' }
         val parts = clean.split('.')
         val formatted = if (parts.size > 2) {
@@ -77,16 +91,19 @@ class SlovinViewModel(
 
         _uiState.update { it.copy(selectedMarginPreset = matchedPreset) }
         recalculate(_uiState.value.populationInput, formatted)
+        recomputeStratifiedAllocation()
     }
 
     fun setPresetPopulation(value: Long) {
         recalculate(value.toString(), _uiState.value.marginInput)
+        recomputeStratifiedAllocation()
     }
 
     fun adjustPopulation(delta: Long) {
         val current = _uiState.value.populationInput.toLongOrNull() ?: 0L
         val updated = (current + delta).coerceAtLeast(1L)
         recalculate(updated.toString(), _uiState.value.marginInput)
+        recomputeStratifiedAllocation()
     }
 
     fun setPresetMargin(percent: Double) {
@@ -97,6 +114,7 @@ class SlovinViewModel(
         }
         _uiState.update { it.copy(selectedMarginPreset = percent) }
         recalculate(_uiState.value.populationInput, formattedMargin)
+        recomputeStratifiedAllocation()
     }
 
     private fun recalculate(popStr: String, marginStr: String) {
@@ -125,6 +143,139 @@ class SlovinViewModel(
         }
     }
 
+    // ==========================================
+    // STRATIFIED / GRADE LEVEL ALLOCATION LOGIC
+    // ==========================================
+
+    fun addStratum(name: String = "", population: String = "") {
+        val currentList = _uiState.value.strataInputs.toMutableList()
+        val defaultName = if (name.isBlank()) "Grade ${currentList.size + 7}" else name
+        currentList.add(StratumInputItem(name = defaultName, populationStr = population))
+        _uiState.update { it.copy(strataInputs = currentList) }
+        recomputeStratifiedAllocation()
+    }
+
+    fun updateStratum(id: String, name: String, population: String) {
+        val cleanPop = population.filter { it.isDigit() }
+        val updated = _uiState.value.strataInputs.map { item ->
+            if (item.id == id) item.copy(name = name, populationStr = cleanPop) else item
+        }
+        _uiState.update { it.copy(strataInputs = updated) }
+        recomputeStratifiedAllocation()
+    }
+
+    fun removeStratum(id: String) {
+        val current = _uiState.value.strataInputs
+        if (current.size <= 1) {
+            _uiState.update { it.copy(snackbarMessage = "At least one level is required") }
+            return
+        }
+        val updated = current.filterNot { it.id == id }
+        _uiState.update { it.copy(strataInputs = updated) }
+        recomputeStratifiedAllocation()
+    }
+
+    fun toggleUseSlovinSample(useSlovin: Boolean) {
+        _uiState.update { it.copy(useSlovinSampleSize = useSlovin) }
+        recomputeStratifiedAllocation()
+    }
+
+    fun onCustomSampleSizeChange(newSample: String) {
+        val clean = newSample.filter { it.isDigit() }
+        _uiState.update { it.copy(customSampleSizeInput = clean) }
+        recomputeStratifiedAllocation()
+    }
+
+    fun toggleStratumDetail(id: String) {
+        _uiState.update {
+            it.copy(expandedStratumDetailId = if (it.expandedStratumDetailId == id) null else id)
+        }
+    }
+
+    fun syncStrataSumToSlovinPopulation() {
+        val sum = _uiState.value.strataInputs.sumOf {
+            it.populationStr.filter { c -> c.isDigit() }.toLongOrNull() ?: 0L
+        }
+        if (sum > 0L) {
+            onPopulationChange(sum.toString())
+            _uiState.update {
+                it.copy(snackbarMessage = "Synced ${SlovinMath.formatNumber(sum)} to main Slovin Population!")
+            }
+        } else {
+            _uiState.update { it.copy(snackbarMessage = "Enter level populations first") }
+        }
+    }
+
+    fun applyStrataPreset(preset: String) {
+        val newList = when (preset) {
+            "junior_high" -> listOf(
+                StratumInputItem(name = "Grade 7", populationStr = "350"),
+                StratumInputItem(name = "Grade 8", populationStr = "320"),
+                StratumInputItem(name = "Grade 9", populationStr = "280"),
+                StratumInputItem(name = "Grade 10", populationStr = "250")
+            )
+            "complete_secondary" -> listOf(
+                StratumInputItem(name = "Grade 7", populationStr = "350"),
+                StratumInputItem(name = "Grade 8", populationStr = "320"),
+                StratumInputItem(name = "Grade 9", populationStr = "280"),
+                StratumInputItem(name = "Grade 10", populationStr = "250"),
+                StratumInputItem(name = "Grade 11", populationStr = "220"),
+                StratumInputItem(name = "Grade 12", populationStr = "180")
+            )
+            "college" -> listOf(
+                StratumInputItem(name = "1st Year", populationStr = "500"),
+                StratumInputItem(name = "2nd Year", populationStr = "420"),
+                StratumInputItem(name = "3rd Year", populationStr = "350"),
+                StratumInputItem(name = "4th Year", populationStr = "280")
+            )
+            "departments" -> listOf(
+                StratumInputItem(name = "Engineering", populationStr = "450"),
+                StratumInputItem(name = "Business", populationStr = "600"),
+                StratumInputItem(name = "Arts & Sciences", populationStr = "380"),
+                StratumInputItem(name = "Education", populationStr = "270")
+            )
+            else -> listOf(
+                StratumInputItem(name = "Grade 7", populationStr = "350"),
+                StratumInputItem(name = "Grade 8", populationStr = "300")
+            )
+        }
+        _uiState.update { it.copy(strataInputs = newList) }
+        recomputeStratifiedAllocation()
+    }
+
+    private fun recomputeStratifiedAllocation() {
+        val state = _uiState.value
+        val effectiveSampleSize = if (state.useSlovinSampleSize) {
+            state.calculationResult?.recommendedSampleSize ?: 0L
+        } else {
+            state.customSampleSizeInput.toLongOrNull() ?: 0L
+        }
+
+        val summary = if (effectiveSampleSize > 0L) {
+            SlovinMath.calculateStratifiedAllocation(
+                strataInputs = state.strataInputs,
+                totalSampleSize = effectiveSampleSize
+            )
+        } else {
+            null
+        }
+
+        _uiState.update { it.copy(stratifiedSummary = summary) }
+    }
+
+    fun copyStratifiedReport(context: Context) {
+        val summary = _uiState.value.stratifiedSummary ?: return
+        val text = SlovinMath.generateStratifiedExportText(summary)
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("Stratified Allocation Report", text)
+        clipboard.setPrimaryClip(clip)
+        _uiState.update { it.copy(snackbarMessage = "Stratified allocation report copied!") }
+    }
+
+    // ==========================================
+    // UI NAVIGATION & INTERACTION
+    // ==========================================
+
     fun toggleStepsExpanded() {
         _uiState.update { it.copy(isStepsExpanded = !it.isStepsExpanded) }
     }
@@ -135,6 +286,9 @@ class SlovinViewModel(
 
     fun setActiveTab(tab: Int) {
         _uiState.update { it.copy(activeTab = tab) }
+        if (tab == 1) {
+            recomputeStratifiedAllocation()
+        }
     }
 
     fun toggleHistorySheet(show: Boolean) {
@@ -165,6 +319,7 @@ class SlovinViewModel(
             item.marginOfErrorPercent.toString()
         }
         recalculate(item.population.toString(), marginStr)
+        recomputeStratifiedAllocation()
         _uiState.update {
             it.copy(
                 showHistorySheet = false,

@@ -171,6 +171,14 @@ fun FormulaGuideDialog(
                 title = "Choosing Margin of Error (e)",
                 content = "• 1% (0.01): Rigorous clinical trials, medical efficacy, safety compliance.\n• 2% – 3% (0.02 - 0.03): National election polls, government censuses, high-stakes market forecasting.\n• 5% (0.05): Standard accepted convention for university theses, academic research papers, and corporate surveys.\n• 10% (0.10): Exploratory surveys, rapid pilot testing, low-budget feedback polls."
             )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Stratified Allocation Section
+            GuideSection(
+                title = "Stratified Proportional Allocation",
+                content = "When dividing a total sample size (n) among various strata or grade levels (e.g., Grade 7, 8, 9, 10), use proportional allocation:\n\nSample for Level = (Level Population / Total Population) × Sample Size\n\nThis ensures that larger grade levels represent a proportionately larger share of the sample, preventing sampling bias across grade levels."
+            )
         }
     }
 }
